@@ -129,29 +129,57 @@ const (
 	JLEc = D12(JLEcd)<<16 | D12(JLEcb)
 
 	// GP/SSE opcodes
-	CVTSI2SSD  = RMscalar(0x2a)           // CVTSI2SS or CVTSI2SD
-	CVTTSSD2SI = RMscalar(0x2c)           // CVTTSS2SI or CVTTSD2SI
-	MOVDQ      = RMprefix(0x66<<8 | 0x6e) // MOVD or MOVQ
-	MOVDQmr    = RMprefix(0x66<<8 | 0x7e) // register parameters reversed
+	CVTSI2SSD  = RMscalar(0x2a)             // CVTSI2SS or CVTSI2SD
+	CVTTSSD2SI = RMscalar(0x2c)             // CVTTSS2SI or CVTTSD2SI
+	MOVDQ      = RMprefix(0x66<<8 | 0x6e)   // MOVD or MOVQ
+	MOVOA      = RMprefixnt(0x66<<8 | 0x6f) // aligned octet
+	MOVOU      = RMprefixnt(0xf3<<8 | 0x6f) // unaligned octet
+	MOVDQmr    = RMprefix(0x66<<8 | 0x7e)   // register parameters reversed
+	MOVOAmr    = RMprefixnt(0x66<<8 | 0x7f) // aligned octet
+	MOVOUmr    = RMprefixnt(0xf3<<8 | 0x7f) // unaligned octet
 
 	// SSE opcodes
-	MOVSSD   = RMscalar(0x10)  // MOVSS or MOVSD
-	MOVSSDmr = RMscalar(0x11)  // RegReg is redundant
-	MOVAPSD  = RMpacked(0x28)  // MOVAPS or MOVAPD
-	UCOMISSD = RMpacked(0x2e)  // UCOMISS or UCOMISD
-	ROUNDSSD = RMIscalar(0x3a) // ROUNDSS or ROUNDSD
-	SQRTSSD  = RMscalar(0x51)  // SQRTSS or SQRTSD
-	ANDPSD   = RMpacked(0x54)  // ANDPS or ANDPD
-	ORPSD    = RMpacked(0x56)  // ORPS or ORPD
-	XORPSD   = RMpacked(0x57)  // XORPS or XORPD
-	ADDSSD   = RMscalar(0x58)  // ADDSS or ADDSD
-	MULSSD   = RMscalar(0x59)  // MULSS or MULSD
-	CVTS2SSD = RMscalar(0x5a)  // CVTS2SS or CVTS2SD
-	SUBSSD   = RMscalar(0x5c)  // SUBSS or SUBSD
-	MINSSD   = RMscalar(0x5d)  // MINSS or MINSD
-	DIVSSD   = RMscalar(0x5e)  // DIVSS or DIVSD
-	MAXSSD   = RMscalar(0x5f)  // MAXSS or MAXSD
-	PXOR     = RMprefix(0x66<<8 | 0xef)
+	MOVSSD    = RMscalar(0x10)                              // MOVSS or MOVSD
+	MOVSSDmr  = RMscalar(0x11)                              // RegReg is redundant
+	MOVUPSD   = RMpacked(0x10)                              // MOVUPS or MOVUPD
+	MOVUPSDmr = RMpacked(0x11)                              // MOVUPS or MOVUPD to xmm2/m128
+	MOVAPSD   = RMpacked(0x28)                              // MOVAPS or MOVAPD
+	MOVAPSDmr = RMpacked(0x29)                              // MOVAPS or MOVAPD to xmm2/m128
+	UCOMISSD  = RMpacked(0x2e)                              // UCOMISS or UCOMISD
+	PMINS     = Pminmax("\x38\x38\xea\x00\x38\x39\x00\x00") // PMINS{B/W/L}
+	PMAXS     = Pminmax("\x38\x3c\xee\x00\x38\x3d\x00\x00") // PMAXS{B/W/L}
+	PMINU     = Pminmax("\xda\x00\x38\x3a\x38\x3b\x00\x00") // PMINU{B/W/L}
+	PMAXU     = Pminmax("\xde\x00\x38\x3e\x38\x3f\x00\x00") // PMAXU{B/W/L}
+	ROUNDSSD  = RMIscalar(0x3a)                             // ROUNDSS or ROUNDSD
+	SQRTSSD   = RMscalar(0x51)                              // SQRTSS or SQRTSD
+	ANDPSD    = RMpacked(0x54)                              // ANDPS or ANDPD
+	ANDNPSD   = RMpacked(0x55)                              // ANDPS or ANDNPD
+	ORPSD     = RMpacked(0x56)                              // ORPS or ORPD
+	XORPSD    = RMpacked(0x57)                              // XORPS or XORPD
+	ADDSSD    = RMscalar(0x58)                              // ADDSS or ADDSD
+	MULSSD    = RMscalar(0x59)                              // MULSS or MULSD
+	CVTS2SSD  = RMscalar(0x5a)                              // CVTS2SS or CVTS2SD
+	SUBSSD    = RMscalar(0x5c)                              // SUBSS or SUBSD
+	MINSSD    = RMscalar(0x5d)                              // MINSS or MINSD
+	DIVSSD    = RMscalar(0x5e)                              // DIVSS or DIVSD
+	MAXSSD    = RMscalar(0x5f)                              // MAXSS or MAXSD
+	PXOR      = RMprefix(0x66<<8 | 0xef)
+	PSRAi     = RMIpackedsz("\x00\x71\x72\x00\x00\x00\x04\x04\x00\x00") // W/L only
+	PSRLi     = RMIpackedsz("\x00\x71\x72\x73\x73\x00\x02\x02\x02\x03") // W/L/Q/O only
+	PSLLi     = RMIpackedsz("\x00\x71\x72\x73\x73\x00\x06\x06\x06\x07") // W/L/Q/O only
+	PSRL      = RMpackedsz(0xd3<<24 | 0xd2<<16 | 0xd1<<8 | 0)           // W/L/Q only
+	PSRA      = RMpackedsz(0 | 0xe2<<16 | 0xe1<<8 | 0)                  // W/L only
+	PSLL      = RMpackedsz(0xf3<<24 | 0xf2<<16 | 0xf1<<8 | 0)           // // W/L/Q only
+	PSUB      = RMpackedsz(0xfb<<24 | 0xfa<<16 | 0xf9<<8 | 0xf8)
+	PADD      = RMpackedsz(0xd4<<24 | 0xfe<<16 | 0xfd<<8 | 0xfc)
+
+	// shuffle, insert, extract, blend
+	PBLENDi = PBlendi(0x0d<<24| 0x0c<<16| 0x0e<<8 | 0) // W/L/Q only
+	PSHUFDi = PShufi("\x66\x0f\x70")
+	PSHUFHWi = PShufi("\xf3\x0f\x70")
+	PSHUFLWi = PShufi("\xf2\x0f\x70")
+	SHUFPDi = PShufi("\x66\x0f\xc6")
+	SHUFPSi = PShufi("\x0f\xc6")
 )
 
 // Arithmetic logic instructions

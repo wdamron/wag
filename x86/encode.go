@@ -6,6 +6,8 @@ package in
 
 import (
 	"encoding/binary"
+	"github.com/pkg/errors"
+	"math/bits"
 )
 
 var nops = [4][4]byte{
@@ -174,47 +176,63 @@ func (op RM2) RegReg(text *Buf, t Type, r, r2 Reg) {
 	o.copy(text.Extend(o.len()))
 }
 
-func (op RM) RegMemDisp(text *Buf, t Type, r Reg, base Reg, disp int32) {
+func (op RM) RegMemDisp(text *Buf, t Type, r, base Reg, disp int32) {
 	var mod, dispSize = dispModSize(disp)
 	var o output
-	o.rexIf(typeRexW(t) | regRexR(r) | regRexB(Reg(base)))
+	o.rexIf(typeRexW(t) | regRexR(r) | regRexB(base))
 	o.byte(byte(op))
-	o.mod(mod, regRO(r), regRM(Reg(base)))
+	o.mod(mod, regRO(r), regRM(base))
 	o.int(disp, dispSize)
 	o.copy(text.Extend(o.len()))
 }
 
-func (op RM2) RegMemDisp(text *Buf, t Type, r Reg, base Reg, disp int32) {
+func (op RM2) RegMemDisp(text *Buf, t Type, r, base Reg, disp int32) {
 	var mod, dispSize = dispModSize(disp)
 	var o output
-	o.rexIf(typeRexW(t) | regRexR(r) | regRexB(Reg(base)))
+	o.rexIf(typeRexW(t) | regRexR(r) | regRexB(base))
 	o.word(uint16(op))
-	o.mod(mod, regRO(r), regRM(Reg(base)))
+	o.mod(mod, regRO(r), regRM(base))
 	o.int(disp, dispSize)
 	o.copy(text.Extend(o.len()))
 }
 
-func (op RM) RegMemIndexDisp(text *Buf, t Type, r Reg, base Reg, index Reg, s Scale, disp int32) {
+func (op RM) RegMemIndexDisp(text *Buf, t Type, r, base Reg, index Reg, s Scale, disp int32) {
 	var mod, dispSize = dispModSize(disp)
 	var o output
-	o.rexIf(typeRexW(t) | regRexR(r) | regRexX(index) | regRexB(Reg(base)))
+	o.rexIf(typeRexW(t) | regRexR(r) | regRexX(index) | regRexB(base))
 	o.byte(byte(op))
 	o.mod(mod, regRO(r), ModRMSIB)
-	o.sib(s, regIndex(index), regBase(Reg(base)))
+	o.sib(s, regIndex(index), regBase(base))
 	o.int(disp, dispSize)
 	o.copy(text.Extend(o.len()))
 }
 
 // RM (MR) with prefix and two opcode bytes (first byte hardcoded)
 
-type RMprefix uint16 // fixed-length prefix and second opcode byte
-type RMscalar byte   // second opcode byte; type-dependent fixed-length prefix
-type RMpacked byte   // second opcode byte; type-dependent variable-length prefix
+type RMprefix uint16    // fixed-length prefix and second opcode byte
+type RMprefixnt uint16  // fixed-length prefix and second opcode byte; single data-size (no type)
+type RMscalar byte      // second opcode byte; type-dependent fixed-length prefix
+type RMpacked byte      // second opcode byte; type-dependent variable-length prefix
+type RMpackedsz uint32  // op-code set for B/W/L/Q elements; 0x66 prefix without type-dependent REX.W
+type RMIpackedsz string // op-code set for B/W/L/Q/DQ elements with RO; 0x66 prefix without type-dependent REX.W; imm8
+type Pminmax string     // placeholder for PMIN/PMAX instructions
+type PBlendi uint32     // placeholder for BLEND instructions with imm8
+type PShufi string      // placeholder for SHUF instructions with imm8
 
 func (op RMprefix) RegReg(text *Buf, t Type, r, r2 Reg) {
 	var o output
 	o.byte(byte(op >> 8))
 	o.rexIf(typeRexW(t) | regRexR(r) | regRexB(r2))
+	o.byte(0x0f)
+	o.byte(byte(op))
+	o.mod(ModReg, regRO(r), regRM(r2))
+	o.copy(text.Extend(o.len()))
+}
+
+func (op RMprefixnt) RegReg(text *Buf, r, r2 Reg) {
+	var o output
+	o.byte(byte(op >> 8))
+	o.rexIf(regRexR(r) | regRexB(r2))
 	o.byte(0x0f)
 	o.byte(byte(op))
 	o.mod(ModReg, regRO(r), regRM(r2))
@@ -241,6 +259,114 @@ func (op RMpacked) RegReg(text *Buf, t Type, r, r2 Reg) {
 	o.copy(text.Extend(o.len()))
 }
 
+func (op RMpackedsz) opByte(sz Size) (b byte, ok bool) {
+	b = byte(uint64(op) >> (8 * uint64(bits.TrailingZeros8(uint8(sz)))))
+	ok = b != 0 && sz <= Quad
+	return
+}
+
+func (op RMpackedsz) RegReg(text *Buf, sz Size, r, r2 Reg) {
+	var o output
+	bop, ok := op.opByte(sz)
+	if !ok {
+		text.Err(errors.Errorf("missing encoding for RMpackedsz op=%x size=%v addr=%v", op, sz, text.Addr))
+		return
+	}
+	o.byte(0x66)
+	o.rexIf(regRexR(r) | regRexB(r2))
+	o.byte(0x0f)
+	o.byte(bop)
+	o.mod(ModReg, regRO(r), regRM(r2))
+	o.copy(text.Extend(o.len()))
+}
+
+func (op Pminmax) opWord(sz Size) (w uint16, ok bool) {
+	offset := bits.TrailingZeros8(uint8(sz))
+	if offset >= len(op)/2 {
+		return
+	}
+	w = uint16(op[offset*2]) | (uint16(op[offset*2+1])<<8)
+	ok = w != 0 && sz <= Long
+	return
+}
+
+func (op Pminmax) RegReg(text *Buf, sz Size, r, r2 Reg) {
+	var o output
+	w, ok := op.opWord(sz)
+	if !ok {
+		text.Err(errors.Errorf("missing encoding for Pminmax op=%x size=%v addr=%v", op, sz, text.Addr))
+		return
+	}
+	o.byte(0x66)
+	o.rexIf(regRexR(r) | regRexB(r2))
+	o.byte(0x0f)
+	o.byte(byte(w))
+	w >>= 8
+	o.byteIf(byte(w), byte(w) != 0)
+	o.mod(ModReg, regRO(r), regRM(r2))
+	o.copy(text.Extend(o.len()))
+}
+
+func (op RMIpackedsz) opRoBytes(sz Size) (b, ro byte, ok bool) {
+	offset := bits.TrailingZeros8(uint8(sz)) & 0xf
+	b = op[offset]
+	ro = op[offset+5]<<opcodeBase
+	ok = b != 0 && sz <= Octet
+	return
+}
+
+func (op RMIpackedsz) RegImm8(text *Buf, sz Size, r Reg, val int8) {
+	var o output
+	b, ro, ok := op.opRoBytes(sz)
+	if !ok {
+		text.Err(errors.Errorf("missing encoding for RMIpackedsz op=%x size=%v addr=%v", op, sz, text.Addr))
+		return
+	}
+	o.byte(0x66)
+	o.rexIf(regRexB(r))
+	o.byte(0x0f)
+	o.byte(b)
+	o.mod(ModReg, ModRO(ro), regRM(r))
+	o.int8(val)
+	o.copy(text.Extend(o.len()))
+}
+
+func (op PBlendi) opByte(sz Size) (b byte, ok bool) {
+	b = byte(uint32(op) >> (8 * uint64(bits.TrailingZeros8(uint8(sz)))))
+	ok = b != 0 && sz >= Word && sz <= Quad
+	return
+}
+
+func (op PBlendi) RegRegImm8(text *Buf, sz Size, r, r2 Reg, val int8) {
+	var o output
+	b, ok := op.opByte(sz)
+	if !ok {
+		text.Err(errors.Errorf("missing encoding for PBlendi op=%x size=%v addr=%v", op, sz, text.Addr))
+		return
+	}
+	o.byte(0x66)
+	o.rexIf(regRexR(r) | regRexB(r2))
+	o.byte(0x0f)
+	o.byte(0x3a)
+	o.byte(b)
+	o.mod(ModReg, regRO(r), regRM(r2))
+	o.int8(val)
+	o.copy(text.Extend(o.len()))
+}
+
+func (op PShufi) RegRegImm8(text *Buf, r, r2 Reg, val int8) {
+	var o output
+	o.byteIf(op[0], op[0] != 0x0f)
+	o.rexIf(regRexR(r) | regRexB(r2))
+	o.byteIf(0x0f, op[0] == 0x0f)
+	for i := 1; i < len(op); i++ {
+		o.byte(op[i])
+	}
+	o.mod(ModReg, regRO(r), regRM(r2))
+	o.int8(val)
+	o.copy(text.Extend(o.len()))
+}
+
 func (op RMscalar) TypeRegReg(text *Buf, floatType, intType Type, r, r2 Reg) {
 	var o output
 	o.byte(typeScalarPrefix(floatType))
@@ -251,38 +377,120 @@ func (op RMscalar) TypeRegReg(text *Buf, floatType, intType Type, r, r2 Reg) {
 	o.copy(text.Extend(o.len()))
 }
 
-func (op RMprefix) RegMemDisp(text *Buf, t Type, r Reg, base Reg, disp int32) {
+func (op RMprefix) RegMemDisp(text *Buf, t Type, r, base Reg, disp int32) {
 	var mod, dispSize = dispModSize(disp)
 	var o output
 	o.byte(byte(op >> 8))
-	o.rexIf(typeRexW(t) | regRexR(r) | regRexB(Reg(base)))
+	o.rexIf(typeRexW(t) | regRexR(r) | regRexB(base))
 	o.byte(0x0f)
 	o.byte(byte(op))
-	o.mod(mod, regRO(r), regRM(Reg(base)))
+	o.mod(mod, regRO(r), regRM(base))
 	o.int(disp, dispSize)
 	o.copy(text.Extend(o.len()))
 }
 
-func (op RMscalar) RegMemDisp(text *Buf, t Type, r Reg, base Reg, disp int32) {
+func (op RMprefixnt) RegMemDisp(text *Buf, r, base Reg, disp int32) {
+	var mod, dispSize = dispModSize(disp)
+	var o output
+	o.byte(byte(op >> 8))
+	o.rexIf(regRexR(r) | regRexB(base))
+	o.byte(0x0f)
+	o.byte(byte(op))
+	o.mod(mod, regRO(r), regRM(base))
+	o.int(disp, dispSize)
+	o.copy(text.Extend(o.len()))
+}
+
+func (op RMscalar) RegMemDisp(text *Buf, t Type, r, base Reg, disp int32) {
 	var mod, dispSize = dispModSize(disp)
 	var o output
 	o.byte(typeScalarPrefix(t))
-	o.rexIf(regRexR(r) | regRexB(Reg(base)))
+	o.rexIf(regRexR(r) | regRexB(base))
 	o.byte(0x0f)
 	o.byte(byte(op))
-	o.mod(mod, regRO(r), regRM(Reg(base)))
+	o.mod(mod, regRO(r), regRM(base))
 	o.int(disp, dispSize)
 	o.copy(text.Extend(o.len()))
 }
 
-func (op RMpacked) RegMemDisp(text *Buf, t Type, r Reg, base Reg, disp int32) {
+func (op RMpacked) RegMemDisp(text *Buf, t Type, r, base Reg, disp int32) {
 	var mod, dispSize = dispModSize(disp)
 	var o output
 	o.byteIf(0x66, t&8 == 8)
-	o.rexIf(regRexR(r) | regRexB(Reg(base)))
+	o.rexIf(regRexR(r) | regRexB(base))
 	o.byte(0x0f)
 	o.byte(byte(op))
-	o.mod(mod, regRO(r), regRM(Reg(base)))
+	o.mod(mod, regRO(r), regRM(base))
+	o.int(disp, dispSize)
+	o.copy(text.Extend(o.len()))
+}
+
+func (op RMpackedsz) RegMemDisp(text *Buf, sz Size, r, base Reg, disp int32) {
+	var mod, dispSize = dispModSize(disp)
+	var o output
+	bop, ok := op.opByte(sz)
+	if !ok {
+		text.Err(errors.Errorf("missing encoding for RMpackedsz op=%x size=%v addr=%v", op, sz, text.Addr))
+		return
+	}
+	o.byte(0x66)
+	o.rexIf(regRexR(r) | regRexB(base))
+	o.byte(0x0f)
+	o.byte(bop)
+	o.mod(mod, regRO(r), regRM(base))
+	o.int(disp, dispSize)
+	o.copy(text.Extend(o.len()))
+}
+
+func (op PBlendi) RegMemDispImm8(text *Buf, sz Size, r, base Reg, disp int32, val int8) {
+	var mod, dispSize = dispModSize(disp)
+	var o output
+	b, ok := op.opByte(sz)
+	if !ok {
+		text.Err(errors.Errorf("missing encoding for PBlendi op=%x size=%v addr=%v", op, sz, text.Addr))
+		return
+	}
+	o.byte(0x66)
+	o.rexIf(regRexR(r) | regRexB(base))
+	o.byte(0x0f)
+	o.byte(0x3a)
+	o.byte(b)
+	o.mod(mod, regRO(r), regRM(base))
+	o.int(disp, dispSize)
+	o.int8(val)
+	o.copy(text.Extend(o.len()))
+}
+
+func (op PShufi) RegMemDispImm8(text *Buf, r, base Reg, disp int32, val int8) {
+	var mod, dispSize = dispModSize(disp)
+	var o output
+	o.byteIf(op[0], op[0] != 0x0f)
+	o.rexIf(regRexR(r) | regRexB(base))
+	o.byteIf(op[0], op[0] == 0x0f)
+	for i := 1; i < len(op); i++ {
+		o.byte(op[i])
+	}
+	o.mod(mod, regRO(r), regRM(base))
+	o.int(disp, dispSize)
+	o.int8(val)
+	o.copy(text.Extend(o.len()))
+}
+
+func (op Pminmax) RegMemDisp(text *Buf, sz Size, r, base Reg, disp int32) {
+	var mod, dispSize = dispModSize(disp)
+	var o output
+	w, ok := op.opWord(sz)
+	if !ok {
+		text.Err(errors.Errorf("missing encoding for Pminmax op=%x size=%v addr=%v", op, sz, text.Addr))
+		return
+	}
+	o.byte(0x66)
+	o.rexIf(regRexR(r) | regRexB(base))
+	o.byte(0x0f)
+	o.byte(byte(w))
+	w >>= 8
+	o.byteIf(byte(w), w != 0)
+	o.mod(mod, regRO(r), regRM(base))
 	o.int(disp, dispSize)
 	o.copy(text.Extend(o.len()))
 }
@@ -291,12 +499,12 @@ func (op RMpacked) RegMemDisp(text *Buf, t Type, r Reg, base Reg, disp int32) {
 
 type RMdata8 byte // opcode byte
 
-func (op RMdata8) RegMemDisp(text *Buf, _ Type, r Reg, base Reg, disp int32) {
+func (op RMdata8) RegMemDisp(text *Buf, _ Type, r, base Reg, disp int32) {
 	var mod, dispSize = dispModSize(disp)
 	var o output
-	o.rex(regRexR(r) | regRexB(Reg(base)))
+	o.rex(regRexR(r) | regRexB(base))
 	o.byte(byte(op))
-	o.mod(mod, regRO(r), regRM(Reg(base)))
+	o.mod(mod, regRO(r), regRM(base))
 	o.int(disp, dispSize)
 	o.copy(text.Extend(o.len()))
 }
@@ -305,13 +513,13 @@ func (op RMdata8) RegMemDisp(text *Buf, _ Type, r Reg, base Reg, disp int32) {
 
 type RMdata16 byte // opcode byte
 
-func (op RMdata16) RegMemDisp(text *Buf, _ Type, r Reg, base Reg, disp int32) {
+func (op RMdata16) RegMemDisp(text *Buf, _ Type, r, base Reg, disp int32) {
 	var mod, dispSize = dispModSize(disp)
 	var o output
 	o.byte(0x66)
-	o.rexIf(regRexR(r) | regRexB(Reg(base)))
+	o.rexIf(regRexR(r) | regRexB(base))
 	o.byte(byte(op))
-	o.mod(mod, regRO(r), regRM(Reg(base)))
+	o.mod(mod, regRO(r), regRM(base))
 	o.int(disp, dispSize)
 	o.copy(text.Extend(o.len()))
 }
@@ -389,9 +597,9 @@ func (op MI8) OneSizeRegImm(text *Buf, r Reg, val8 int64) {
 func (op MI8) MemDispImm(text *Buf, _ Type, base Reg, disp int32, val8 int64) {
 	var mod, dispSize = dispModSize(disp)
 	var o output
-	o.rexIf(regRexB(Reg(base)))
+	o.rexIf(regRexB(base))
 	o.byte(byte(op >> 8))
-	o.mod(mod, ModRO(op), regRM(Reg(base)))
+	o.mod(mod, ModRO(op), regRM(base))
 	o.int(disp, dispSize)
 	o.int8(int8(val8))
 	o.copy(text.Extend(o.len()))
@@ -406,9 +614,9 @@ func (op MI16) MemDispImm(text *Buf, _ Type, base Reg, disp int32, val16 int64) 
 	var mod, dispSize = dispModSize(disp)
 	var o output
 	o.byte(0x66)
-	o.rexIf(regRexB(Reg(base)))
+	o.rexIf(regRexB(base))
 	o.byte(byte(op >> 8))
-	o.mod(mod, ModRO(op), regRM(Reg(base)))
+	o.mod(mod, ModRO(op), regRM(base))
 	o.int(disp, dispSize)
 	o.int16(int16(val16))
 	o.copy(text.Extend(o.len()))
@@ -421,9 +629,9 @@ type MI32 uint16 // opcode byte and ModRO byte
 func (op MI32) MemDispImm(text *Buf, t Type, base Reg, disp int32, val32 int64) {
 	var mod, dispSize = dispModSize(disp)
 	var o output
-	o.rexIf(typeRexW(t) | regRexB(Reg(base)))
+	o.rexIf(typeRexW(t) | regRexB(base))
 	o.byte(byte(op >> 8))
-	o.mod(mod, ModRO(op), regRM(Reg(base)))
+	o.mod(mod, ModRO(op), regRM(base))
 	o.int(disp, dispSize)
 	o.int32(int32(val32))
 	o.copy(text.Extend(o.len()))

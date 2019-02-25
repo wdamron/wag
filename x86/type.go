@@ -34,6 +34,17 @@ const (
 	F64  = Type(8 | Float)
 )
 
+// Element size for vector operations
+type Size uint8
+
+const (
+	Byte = Size(1)
+	Word = Size(2)
+	Long = Size(4)
+	Quad = Size(8)
+	Octet = Size(16)
+)
+
 // Category of a non-void type.
 func (t Type) Category() ScalarCategory {
 	return ScalarCategory(t & 1)

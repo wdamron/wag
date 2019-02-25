@@ -16,6 +16,7 @@ type Buffer interface {
 type Buf struct {
 	Buffer
 	Addr int32
+	Errors []error
 }
 
 func (buf *Buf) Extend(n int) (b []byte) {
@@ -32,4 +33,10 @@ func (buf *Buf) PutByte(x byte) {
 func (buf *Buf) PutUint32(x uint32) {
 	buf.Buffer.PutUint32(x)
 	buf.Addr += 4
+}
+
+func (buf *Buf) Err(err error) {
+	if err != nil {
+		buf.Errors = append(buf.Errors, err)
+	}
 }
